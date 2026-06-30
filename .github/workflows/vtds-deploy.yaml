@@ -1,0 +1,107 @@
+name: "Deploy vTDS test instance on /deploy from approved user"
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+jobs:
+  deploy:
+    if: |
+      github.event.issue.pull_request && startsWith(github.event.comment.body, '/deploy')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate OpenCHAMI GitHub App token
+        id: ochami-app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.OCHAMI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.OCHAMI_APP_PRIVATE_KEY }}
+          owner: openchami
+          repositories: |
+            release
+
+      - name: Generate HPE GitHub App token
+        id: hpe-app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.HPE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HPE_APP_PRIVATE_KEY }}
+          owner: cray-hpe
+          repositories: |
+            openchami-vtds
+
+      - name: Trigger vTDS deployment
+        uses: actions/github-script@v9
+        env:
+          HPE_TOKEN: ${{ steps.app-token.outputs.hpe-app-token }}
+        with:
+          github-token: ${{ steps.app-token.outputs.ochami-app-token }}
+          script: |
+            const hpeOrg = getOctokit(process.env.HPE_TOKEN);
+
+            // Current repository (openchami/release). github-token handles auth
+            // for this.
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.issue.number;
+            const commenter = context.payload.comment.user.login;
+
+            const permission =
+              await github.rest.repos.getCollaboratorPermissionLevel({
+                owner,
+                repo,
+                username: commenter
+              });
+
+            const level = permission.data.permission;
+
+            // Only allow writers, maintainers, and admins to run /deploy.
+            if (!["write", "maintain", "admin"].includes(level)) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body: `@${commenter} is not authorized to deploy.`
+              });
+
+              core.setFailed(
+                `User ${commenter} has permission level ${level}`
+              );
+              return;
+            }
+
+            // Use the ref the PR branch HEAD points to.
+            const pr =
+              await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: issue_number
+              });
+
+            const sha = pr.data.head.sha;
+
+            // Use HPE GitHub App auth token here to trigger vTDS deployment
+            // workflow in cray-hpe/openchami-vtds.
+            await hpeOrg.rest.actions.createWorkflowDispatch({
+              owner: "cray-hpe",
+              repo: "openchami-vtds",
+              workflow_id: "vtds.yml",
+              ref: "main",
+              inputs: {
+                pr_number: String(issue_number),
+                ref: sha
+              }
+            });
+
+            // Post an informative comment.
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number,
+              body: `Deployment queued for SHA: ${sha}.`
+            });
