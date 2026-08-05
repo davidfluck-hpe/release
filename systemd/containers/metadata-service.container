@@ -1,0 +1,37 @@
+[Unit]
+Description=The metadata-service container
+# Depends on SMD
+Wants=smd.service
+After=smd.service
+PartOf=openchami.target
+
+[Container]
+ContainerName=metadata-service
+HostName=metadata-service
+Image=ghcr.io/openchami/metadata-service:v0.2.1
+
+Secret=metadata-service-bootstrap-token,type=env,target=TOKENSMITH_BOOTSTRAP_TOKEN
+
+# Environment Variables
+EnvironmentFile=/etc/openchami/configs/openchami.env
+
+# Secrets
+Secret=metadata-service-bootstrap-token,type=env,target=TOKENSMITH_BOOTSTRAP_TOKEN
+
+# Volumes
+Volume=/etc/openchami/configs/metadata-service.yaml:/etc/metadata-service/config.yaml:ro,Z
+Volume=metadata-service-data:/app/data
+
+# Networks for the Container to use
+Network=openchami-internal.network
+
+# For WireGuard tunnel creation
+AddCapability=cap_net_admin
+AddDevice=/dev/net/tun
+
+# Proxy settings
+PodmanArgs=--http-proxy=false
+
+[Service]
+ExecStartPre=/usr/sbin/tokensmith_bootstrap_token metadata-service
+Restart=always
